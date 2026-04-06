@@ -1,30 +1,14 @@
 import requests
 import time
+import json
 import os
-from flask import Flask
-from threading import Thread
 
-# ================== CONFIG ==================
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-CHAT_ID = None  # ไม่ต้องใช้แล้ว
+TELEGRAM_TOKEN = "8712877674:AAF_PkXmkVlQPSaB-vtZAjea2IxGofZohUw"
+CHAT_ID = "532790110"
 
 DATA_FILE = "data.json"
 
-# ================== WEB (กัน Render ดับ) ==================
-app = Flask('')
-
-@app.route('/')
-def home():
-    return "Bot is running!"
-
-def run_web():
-    app.run(host='0.0.0.0', port=10000)
-
-def keep_alive():
-    t = Thread(target=run_web)
-    t.start()
-
-# ================== LOAD DATA ==================
+# โหลดข้อมูล
 if os.path.exists(DATA_FILE):
     with open(DATA_FILE, "r") as f:
         data = json.load(f)
@@ -41,16 +25,35 @@ def save():
             "status": status_cache
         }, f)
 
-# ================== TELEGRAM ==================
-def send(chat_id, msg):
+def send(msg):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    requests.post(url, data={"chat_id": chat_id, "text": msg})
+    requests.post(url, data={"chat_id": CHAT_ID, "text": msg})
 
+# 🔥 ดึงข้อมูลจาก Shopee (SPX)
+def track_spx(tracking):
+    try:
+        url = f"https://spx.co.th/api/v2/fleet_order/tracking/search?q={tracking}"
+        res = requests.get(url).json()
+
+        data = res.get("data", {})
+        tracking_list_data = data.get("tracking_list", [])
+
+        if not tracking_list_data:
+            return "ยังไม่อัปเดต", ""
+
+        latest = tracking_list_data[0]
+        status = latest.get("status_desc", "")
+        time_text = latest.get("time", "")
+
+        return status, time_text
+    except:
+        return "error", ""
+
+# รับข้อความ
 last_update_id = None
 
 def get_updates():
     global last_update_id
-
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates"
     res = requests.get(url).json()
 
@@ -61,71 +64,30 @@ def get_updates():
             last_update_id = update_id
 
             if "message" in item:
-                chat_id = item["message"]["chat"]["id"]
                 text = item["message"].get("text", "")
 
-                handle_command(chat_id, text)
+                if text.startswith("/add"):
+                    code = text.replace("/add", "").strip()
+                    if code not in tracking_list:
+                        tracking_list.append(code)
+                        save()
+                        send(f"✅ เพิ่มแล้ว {code}")
+                    else:
+                        send("❗ มีแล้ว")
 
-# ================== SHOPEE TRACK ==================
-def track_spx(tracking):
-    try:
-        url = f"https://spx.co.th/api/v2/fleet_order/tracking/search?q={tracking}"
-        res = requests.get(url).json()
+                elif text.startswith("/check"):
+                    for t in tracking_list:
+                        status, time_text = track_spx(t)
+                        send(f"{t}\n📍 {status}\n⏰ {time_text}")
 
-        orders = res.get("data", {}).get("orders", [])
-        if not orders:
-            return "ไม่พบพัสดุ", ""
-
-        latest = orders[0].get("latest_status", {})
-        status = latest.get("status", "ไม่ทราบสถานะ")
-        time_text = latest.get("timestamp", "")
-
-        return status, time_text
-
-    except:
-        return "error", ""
-
-# ================== COMMAND ==================
-def handle_command(chat_id, text):
-    if text == "/start":
-        send(chat_id, "🚀 Bot Shopee พร้อมแล้ว\nใช้ /add เลขพัสดุ")
-
-    elif text.startswith("/add"):
-        parts = text.split()
-        if len(parts) < 2:
-            send(chat_id, "❌ ใส่เลขพัสดุด้วย")
-            return
-
-        tracking = parts[1]
-
-        if tracking not in tracking_list:
-            tracking_list.append(tracking)
-            save()
-            send(chat_id, f"✅ เพิ่มแล้ว {tracking}")
-        else:
-            send(chat_id, "📦 มีอยู่แล้ว")
-
-    elif text.startswith("/check"):
-        if not tracking_list:
-            send(chat_id, "❌ ไม่มีพัสดุ")
-            return
-
-        for t in tracking_list:
-            status, time_text = track_spx(t)
-
-            msg = f"📦 {t}\n📍 {status}"
-            if time_text:
-                msg += f"\n⏰ {time_text}"
-
-            send(chat_id, msg)
-
-# ================== AUTO CHECK ==================
-def check_auto():
+# 🔥 เช็คอัตโนมัติ
+def auto_check():
     for t in tracking_list:
         status, time_text = track_spx(t)
 
         old = status_cache.get(t)
 
+        # ถ้าสถานะเปลี่ยน → แจ้ง
         if old != status:
             status_cache[t] = status
             save()
@@ -134,16 +96,16 @@ def check_auto():
             if time_text:
                 msg += f"\n⏰ {time_text}"
 
-            send( tracking_list_chat_id, msg)
+            send(msg)
 
-# ================== MAIN ==================
-keep_alive()
-
-print("🚀 Bot started")
+# เริ่มทำงาน
+send("🚀 Bot started")
 
 while True:
     try:
         get_updates()
+        auto_check()
+        time.sleep(30)  # 🔥 เช็คทุก 30 วินาที
+    except Exception as e:
+        send(f"❌ error: {e}")
         time.sleep(10)
-    except:
-        time.sleep(5)
